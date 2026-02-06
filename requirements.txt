@@ -1,0 +1,9 @@
+numpy
+requests
+tqdm
+spacy
+sentence-transformers
+transformers
+peft
+torch
+faiss-cpu

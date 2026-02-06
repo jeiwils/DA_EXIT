@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.venv/
+venv/
+.env
+
+# Outputs / artifacts
+data/processed_datasets/
+data/representations/
+data/models/
+data/results/
+data/raw_datasets/
+
+# Vector indexes / arrays / checkpoints
+*.faiss
+*.npy
+*.pt
+*.bin
+*.safetensors
+*.ckpt
+
+# Token usage shards
+data/**/token_usage_*.json

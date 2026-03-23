@@ -7,15 +7,19 @@ logic to the dedicated chunking modules via buffered JSONL processing.
 """
 
 from __future__ import annotations
-
+from tqdm import tqdm 
 import csv
 import json
 import random
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Tuple, Set
 
 # Import the new pipeline utilities
-from src.a2_indexing.chunking import ChunkingConfig, chunk_jsonl as standard_chunk_jsonl
+from src.a2_indexing.chunking import (
+    ChunkingConfig, 
+    chunk_jsonl as standard_chunk_jsonl,
+    chunk_text
+)
 from src.a2_indexing.discourse_aware_chunking import (
     DiscourseAwareChunkingConfig,
     chunk_jsonl as da_chunk_jsonl,
@@ -469,7 +473,10 @@ def process_acord_split(
                     },
                 )
             if include_full_passages_chunks:
-                chunks = split_long_passage(text)
+                # Use the new chunk_text function and extract the string text
+                chunk_objects = chunk_text(text, ChunkingConfig())
+                chunks = [c.text for c in chunk_objects]
+                
                 if not chunks:
                     continue
                 if len(chunks) == 1:
@@ -634,15 +641,9 @@ def get_raw_dataset_path(dataset: str, split: str) -> str:
         raise ValueError(f"Missing file_path for dataset: {dataset}")
     return str(file_path)
 
-##### Types
-"""Shared ingestion type aliases."""
-
-FieldMap = Dict[str, Callable[[Dict], Iterable]] #### ?????
-
 ##### Generic dataset processing
 """Generic utilities for mapping raw datasets into a unified JSONL format."""
-FieldMap = Dict[str, Callable[[Dict], Iterable]]
-
+FieldMap = Dict[str, Callable[[Dict[str, Any]], Iterable[Any]]]
 def process_dataset(
     *,
     dataset: str,
@@ -659,10 +660,9 @@ def process_dataset(
     """Process ``file_path`` using ``field_map`` and pipe to chunking utilities."""
 
     # ---- Load raw examples -------------------------------------------------
-    examples: List[Dict]
+    examples: List[Dict] = []
     with open(file_path, "r", encoding="utf-8") as f:
         if file_path.endswith(".jsonl"):
-            examples = []
             for i, line in enumerate(f):
                 if isinstance(max_examples, int) and i >= max_examples:
                     break
@@ -675,6 +675,7 @@ def process_dataset(
     paths = processed_dataset_paths(dataset, split)
     qa_path = str(paths["questions"])
     passages_path = str(paths["passages"])
+    full_passages_path = str(paths.get("full_passages", ""))
 
     get_id = field_map["get_id"]
     get_question = field_map["get_question"]
@@ -690,152 +691,84 @@ def process_dataset(
 
     include_questions = "questions" in include_outputs
     include_passages = "passages" in include_outputs
-    include_full_passages = (
-        "full_passages" in include_outputs 
-        or "full_passages_chunks" in include_outputs 
-        or "full_passages_chunks_discourse_aware" in include_outputs
-    )
+    include_full_passages = any(o in include_outputs for o in ["full_passages", "full_passages_chunks", "full_passages_chunks_discourse_aware"])
 
-    # ---- Determine resume state for extraction -----------------------------
-    done_qids: set[str] = set()
-    if include_questions:
-        done_qids, _ = compute_resume_sets(
-            resume=resume,
-            out_path=qa_path,
-            items=examples,
-            get_id=lambda ex, i: get_id(ex),
-            phase_label=f"{dataset} {split} questions",
-            id_field="question_id",
-        )
+    # ---- Determine resume state --------------------------------------------
+    done_qids: Set[str] = set()
+    done_pids: Set[str] = set()
+    done_full_pids: Set[str] = set()
 
-    done_pids: set[str] = set()
-    if include_passages:
-        def iter_pids() -> Iterable[str]:
-            for ex in examples:
-                for pid, _title, _text in iter_passages_fn(ex):
-                    yield pid
+    if resume:
+        if include_questions:
+            done_qids, _ = compute_resume_sets(
+                resume=True, out_path=qa_path, items=examples,
+                get_id=lambda ex, i: get_id(ex), phase_label=f"{dataset} q", id_field="question_id"
+            )
 
-        done_pids, _ = compute_resume_sets(
-            resume=resume,
-            out_path=passages_path,
-            items=iter_pids(),
-            get_id=lambda pid, i: pid,
-            phase_label=f"{dataset} {split} passages",
-            id_field="passage_id",
-        )
+        if include_passages:
+            def iter_pids():
+                for ex in examples:
+                    for pid, _, _ in iter_passages_fn(ex): yield pid
+            done_pids, _ = compute_resume_sets(
+                resume=True, out_path=passages_path, items=iter_pids(),
+                get_id=lambda pid, i: pid, phase_label=f"{dataset} p", id_field="passage_id"
+            )
 
-    full_passages_path = str(paths["full_passages"]) if iter_full_passages_fn else None
-    done_full_pids: set[str] = set()
-    
-    if full_passages_path and include_full_passages:
-        def iter_full_pids() -> Iterable[str]:
-            for ex in examples:
-                for pid, _title, _text in iter_full_passages_fn(ex):
-                    yield pid
+        if include_full_passages and iter_full_passages_fn:
+            def iter_full_pids():
+                for ex in examples:
+                    for pid, _, _ in iter_full_passages_fn(ex): yield pid
+            done_full_pids, _ = compute_resume_sets(
+                resume=True, out_path=full_passages_path, items=iter_full_pids(),
+                get_id=lambda pid, i: pid, phase_label=f"{dataset} fp", id_field="passage_id"
+            )
 
-        done_full_pids, _ = compute_resume_sets(
-            resume=resume,
-            out_path=full_passages_path,
-            items=iter_full_pids(),
-            get_id=lambda pid, i: pid,
-            phase_label=f"{dataset} {split} full passages",
-            id_field="passage_id",
-        )
-
-    # ---- STEP 1: Extract Base Data (No Chunking Here) ----------------------
-    for ex in examples:
+    # ---- STEP 1: Extract Base Data -----------------------------------------
+    for ex in tqdm(examples, desc=f"Extracting {dataset} {split}"):
         qid = get_id(ex)
         
         # Write Questions
         if include_questions and qid not in done_qids:
-            gold_ids, seen = [], set()
-            for pid in gold_ids_fn(ex):
-                if pid not in seen:
-                    gold_ids.append(pid)
-                    seen.add(pid)
             record = {
                 "question_id": qid,
                 "dataset": dataset,
                 "split": split,
                 "question": clean_text(get_question(ex)),
                 "gold_answer": clean_text(get_answer(ex)),
-                "gold_passages": gold_ids,
+                "gold_passages": list(dict.fromkeys(gold_ids_fn(ex))),
             }
-            if gold_full_ids_fn is not None:
-                gold_full_ids, seen_full = [], set()
-                for pid in gold_full_ids_fn(ex):
-                    if pid not in seen_full:
-                        gold_full_ids.append(pid)
-                        seen_full.add(pid)
-                record["gold_passages_full"] = gold_full_ids
+            if gold_full_ids_fn:
+                record["gold_passages_full"] = list(dict.fromkeys(gold_full_ids_fn(ex)))
             append_jsonl(qa_path, record)
 
         # Write Sentence Passages
         if include_passages:
             for pid, title, text in iter_passages_fn(ex):
-                if pid in done_pids:
-                    continue
-                append_jsonl(
-                    passages_path,
-                    {
-                        "passage_id": pid,
-                        "title": title,
-                        "text": clean_text(text),
-                    },
-                )
-                done_pids.add(pid)
+                if pid not in done_pids:
+                    append_jsonl(passages_path, {"passage_id": pid, "title": title, "text": clean_text(text)})
+                    done_pids.add(pid)
 
         # Write Full Passages
-        if full_passages_path and include_full_passages:
+        if include_full_passages and iter_full_passages_fn:
             for pid, title, text in iter_full_passages_fn(ex):
-                if pid in done_full_pids:
-                    continue
-                append_jsonl(
-                    full_passages_path,
-                    {
-                        "passage_id": pid,
-                        "title": title,
-                        "text": clean_text(text),
-                    },
-                )
-                done_full_pids.add(pid)
+                if pid not in done_full_pids:
+                    append_jsonl(full_passages_path, {"passage_id": pid, "title": title, "text": clean_text(text)})
+                    done_full_pids.add(pid)
 
     # ---- STEP 2: Pipe through Chunking Modules -----------------------------
-    # Now that full_passages.jsonl is guaranteed to exist on disk, we chunk it.
-    
-    if full_passages_path:
-        # Standard Chunking
+    if full_passages_path and Path(full_passages_path).exists():
         if "full_passages_chunks" in include_outputs:
-            c_config = chunking_config or ChunkingConfig()
             standard_chunk_jsonl(
-                input_path=full_passages_path,
-                output_path=str(paths["full_passages_chunks"]),
-                config=c_config,
-                text_field="text",
-                id_field="passage_id",
-                title_field="title",
-                output_id_field="passage_id",
-                parent_id_field="source_id",
-                copy_fields=("title",),
-                resume=resume,
-                overwrite=overwrite,
+                input_path=full_passages_path, output_path=str(paths["full_passages_chunks"]),
+                config=chunking_config or ChunkingConfig(), resume=resume, overwrite=overwrite,
+                id_field="passage_id", parent_id_field="source_id", copy_fields=("title",)
             )
 
-        # Discourse-Aware Chunking
         if "full_passages_chunks_discourse_aware" in include_outputs:
-            da_config = da_chunking_config or DiscourseAwareChunkingConfig()
             da_chunk_jsonl(
-                input_path=full_passages_path,
-                output_path=str(paths["full_passages_chunks_discourse_aware"]),
-                config=da_config,
-                text_field="text",
-                id_field="passage_id",
-                title_field="title",
-                output_id_field="passage_id",
-                parent_id_field="source_id",
-                copy_fields=("title",),
-                resume=resume,
-                overwrite=overwrite,
+                input_path=full_passages_path, output_path=str(paths["full_passages_chunks_discourse_aware"]),
+                config=da_chunking_config or DiscourseAwareChunkingConfig(), resume=resume, overwrite=overwrite,
+                id_field="passage_id", parent_id_field="source_id", copy_fields=("title",)
             )
 
 ##### Ingestion pipeline helpers

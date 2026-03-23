@@ -11,8 +11,9 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Iterable, Pattern, Sequence, Tuple
+import string
 
-import pysbd
+import spacy
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,9 @@ FORWARD_FOLLOW_RE = re.compile(r"^\s*[:;]")
 # Sentence boundary detection (pysbd)
 ###########################################################################
 
-_SBD_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
+# Initialize a blank English pipeline and add only the sentence boundary detector
+_SPACY_NLP = spacy.blank("en")
+_SPACY_NLP.add_pipe("sentencizer")
 
 ###########################################################################
 # Data model
@@ -226,24 +229,40 @@ class MarkerHit:
 ###########################################################################
 
 
-def iter_sentence_spans(text: str) -> Iterable[Tuple[int, int, str]]:
-    """Yield (start, end, sentence_text) spans using pysbd sentence boundary detection.
-    
-    This is compatible with the pysbd-based sentence splitting in chunking.py,
-    ensuring discourse-aware expansion works on chunks produced by the chunker.
-    """
-    start = 0
-    for sentence in _SBD_SEGMENTER.segment(text):
-        try:
-            # Find sentence position in original text
-            idx = text.index(sentence, start)
-        except ValueError:
-            # Fallback if sentence cannot be found
-            idx = start
-        end = idx + len(sentence)
-        if idx < end and sentence.strip():
-            yield idx, end, sentence
-        start = end
+def iter_sentence_spans(text: str):
+    """Yields (start_char, end_char, sentence_text) using SpaCy."""
+    if not text:
+        return
+        
+    # STRIKE 1: Length limit
+    if len(text) > 5000:
+        yield 0, len(text), text
+        return
+
+    # STRIKE 2: Massive unbroken strings
+    if re.search(r'\S{150,}', text):
+        yield 0, len(text), text
+        return
+
+    # STRIKE 3: Repeating identical punctuation
+    if re.search(r'([^\w\s])\1{15,}', text):
+        yield 0, len(text), text
+        return
+        
+    # STRIKE 4: Punctuation Density (The Ultimate Garbage Filter)
+    # If the text is long enough, and more than 20% of it is punctuation, it's not prose.
+    if len(text) > 100:
+        punct_count = sum(1 for c in text if c in string.punctuation)
+        if punct_count / len(text) > 0.2:
+            yield 0, len(text), text
+            return
+
+    # THE DEBUGGER: Print the length and the first 150 characters right before SpaCy
+    #print(f"\n[DEBUG] Sending to SpaCy (Len: {len(text)}): {text[:150]!r}")
+
+    doc = _SPACY_NLP(text)
+    for sent in doc.sents:
+        yield sent.start_char, sent.end_char, sent.text
 
 
 def _dedupe_by_span(hits: list[MarkerHit]) -> list[MarkerHit]:

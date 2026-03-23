@@ -1,60 +1,57 @@
 # DA_EXIT
 
-Standalone DA_EXIT pipeline extracted from the main RAG_lab repo.
+A discourse-aware retrieval and reasoning pipeline for question answering, based on the work in [this paper](https://arxiv.org/pdf/2412.12559).
 
-This is a development of the work in:
-```text
-https://arxiv.org/pdf/2412.12559
-```
+## Installation
 
-Key idea: discourse-aware sentence expansion is applied after sentence extraction.
+1. Create a virtual environment:
+   ```bash
+   python -m venv .venv
+   ```
 
-## Structure
-- `DA_EXIT.py`: main DA_EXIT orchestrator
-- `dataset_preprocessing.py`: build processed QA/passages JSONL
-- `build_representations.py`: embed passages + build FAISS index
-- `baseline_embeddings_RAG.py`: baseline RAG (dense/sparse/hybrid)
+2. Activate the environment:
+   - On Windows: `.venv\Scripts\Activate.ps1`
+   - On Unix/Mac: `source .venv/bin/activate`
 
-Core modules live under:
-- `preprocessing_ingestion/`
-- `representations_indexing/`
-- `sentence_extraction_reranking/`
-- `metrics/`
-- `LoRa/`
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   python -m spacy download en_core_web_sm
+   ```
 
-## Data layout
-All paths resolve relative to `DA_EXIT/data`.
-- Raw datasets: `DA_EXIT/data/raw_datasets/...`
-- Processed datasets: `DA_EXIT/data/processed_datasets/...`
-- Representations: `DA_EXIT/data/representations/...`
-- Models/checkpoints: `DA_EXIT/data/models/...`
-- Results: `DA_EXIT/data/results/...`
+   Note: For GPU support with FAISS, install `faiss-gpu` manually if needed.
 
-## Setup
+## Usage
+
+This repository exposes a single main entrypoint: `DA_EXIT.py`.
+
+1. Ensure your data is prepared in:
+   - `data/processed_datasets/{dataset}/{split}`
+   - `data/representations/datasets/{dataset}/{split}`
+
+2. Run the main pipeline:
+
 ```bash
-python -m venv .venv
-. .venv/Scripts/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
+python DA_EXIT.py
 ```
 
-Note: `faiss-cpu` is included by default. If you need GPU FAISS, install the GPU variant manually.
+This executes the `main()` loop in `DA_EXIT.py`, which iterates over:
+- `DATASETS`
+- `SPLITS`
+- `RETRIEVER_CONFIG`
+- `SENTENCE_MODES`
+- `TOP_K_CHUNK_SWEEP`
+- `TAU_LOW_SWEEP`
+- `SEEDS`
 
-## Run
-```bash
-# Preprocess datasets
-python -m DA_EXIT preprocess
+3. Optional: adjust the constants at the top of `DA_EXIT.py` to configure:
+- Retriever mix (`RETRIEVER_CONFIG`)
+- Passage/retrieval settings
+- Reader model / server URL
+- LoRA checkpoint path
+- Budget thresholds
 
-# Build representations (embeddings + FAISS)
-python -m DA_EXIT build_representations
+## Requirements
 
-# Run DA_EXIT
-python -m DA_EXIT da_exit
-
-# Baseline RAG
-python -m DA_EXIT baseline_rag
-```
-
-## Notes
-- Local LLM inference uses `SERVER_URL` in the orchestrators (defaults to `http://localhost:8005`).
-- Sentence extraction LoRA expects checkpoints under `DA_EXIT/data/models/...`.
+- Python 3.8+
+- Dependencies listed in `requirements.txt`

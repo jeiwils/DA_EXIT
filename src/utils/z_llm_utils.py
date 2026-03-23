@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
-
+from pathlib import Path
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -92,7 +92,6 @@ def _wrap_for_deepseek_user(prompt: str, task: str, reason: bool = True) -> str:
         return f"{preface}\n\n{prompt}"
     return prompt
 
-
 def query_llm(
     prompt,
     server_url,
@@ -110,21 +109,16 @@ def query_llm(
     repeat_penalty: float = LLM_DEFAULTS["repeat_penalty"],
     seed: int | None = None,
 ):
-    """Query a local LLM server.
+    """Query a local LLM server."""
+    if not prompt:
+        logger.warning("Empty prompt; returning empty string")
+        return "", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    Parameters
-    ----------
-    max_tokens:
-        Maximum number of tokens to generate. If ``None`` and ``phase`` is
-        provided, the value is pulled from :data:`src.config.MAX_TOKENS`.
-        Defaults to ``128`` when no phase is available.
-    temperature:
-        Sampling temperature. If ``None`` and ``phase`` is provided, the value
-        is pulled from :data:`src.config.TEMPERATURE`. Defaults to ``0.2`` when
-        no phase is available.
-    """
     if response_format is not None and grammar is not None:
-        raise ValueError("response_format and grammar cannot both be set")
+        raise ValueError("response_format and grammar cannot both be set; choose one")
+
+    if max_tokens is not None and max_tokens <= 0:
+        raise ValueError(f"max_tokens must be > 0; got {max_tokens}")
 
     is_deepseek = "deepseek" in model_name.lower()
     use_chat = isinstance(prompt, list) or is_deepseek or response_format is not None
@@ -136,40 +130,19 @@ def query_llm(
     if temperature is None:
         temperature = TEMPERATURE.get(phase, 0.2) if phase else 0.6
 
-    if use_chat:
-        endpoint = "/v1/chat/completions"
-        if isinstance(prompt, list):
-            messages = prompt
-        else:
-            content = _wrap_for_deepseek_user(prompt, phase or "", reason) if is_deepseek else prompt
-            messages = [{"role": "user", "content": content}]
-        payload: dict[str, Any] = {
-            "model": "local",
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "top_p": top_p,
-            "top_k": top_k,
-            "mirostat": mirostat,
-            "repeat_penalty": repeat_penalty,
-        }
-        if seed is not None:
-            payload["seed"] = seed
-        if stop:
-            payload["stop"] = stop
-        if response_format is not None:
-            payload["response_format"] = response_format
-        if grammar:
-            payload["grammar"] = grammar
-    else:
-        if grammar:
-            endpoint = "/v1/completions"
-            payload = {
+    try:
+        if use_chat:
+            endpoint = "/v1/chat/completions"
+            if isinstance(prompt, list):
+                messages = prompt
+            else:
+                content = _wrap_for_deepseek_user(prompt, phase or "", reason) if is_deepseek else prompt
+                messages = [{"role": "user", "content": content}]
+            payload: dict[str, Any] = {
                 "model": "local",
-                "prompt": prompt,
+                "messages": messages,
+                "temperature": temperature,
                 "max_tokens": max_tokens,
-                "temperature": temperature,
-                "grammar": grammar,
                 "top_p": top_p,
                 "top_k": top_k,
                 "mirostat": mirostat,
@@ -179,65 +152,91 @@ def query_llm(
                 payload["seed"] = seed
             if stop:
                 payload["stop"] = stop
+            if response_format is not None:
+                payload["response_format"] = response_format
+            if grammar:
+                payload["grammar"] = grammar
         else:
-            endpoint = "/completion"
-            payload = {
-                "prompt": prompt,
-                "n_predict": max_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "mirostat": mirostat,
-                "repeat_penalty": repeat_penalty,
-            }
-            if seed is not None:
-                payload["seed"] = seed
-            if stop:
-                payload["stop"] = stop
+            if grammar:
+                endpoint = "/v1/completions"
+                payload = {
+                    "model": "local",
+                    "prompt": prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "grammar": grammar,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "mirostat": mirostat,
+                    "repeat_penalty": repeat_penalty,
+                }
+                if seed is not None:
+                    payload["seed"] = seed
+                if stop:
+                    payload["stop"] = stop
+            else:
+                endpoint = "/completion"
+                payload = {
+                    "prompt": prompt,
+                    "n_predict": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                    "top_k": top_k,
+                    "mirostat": mirostat,
+                    "repeat_penalty": repeat_penalty,
+                }
+                if seed is not None:
+                    payload["seed"] = seed
+                if stop:
+                    payload["stop"] = stop
 
-    r = _post(f"{server_url}{endpoint}", json=payload)
-    r.raise_for_status()
-    data = r.json()
-    if use_chat:
-        content = data["choices"][0]["message"]["content"]
-    elif grammar:
-        content = data.get("choices", [{}])[0].get("text", "")
-    else:
-        content = data.get("content", data.get("message", ""))
+        r = _post(f"{server_url}{endpoint}", json=payload)
+        r.raise_for_status()
+        data = r.json()
+        if use_chat:
+            content = data["choices"][0]["message"]["content"]
+        elif grammar:
+            content = data.get("choices", [{}])[0].get("text", "")
+        else:
+            content = data.get("content", data.get("message", ""))
 
-    usage = data.get("usage") if isinstance(data, dict) else None
-    if usage:
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-    elif tiktoken is not None:
-        try:
-            enc = tiktoken.encoding_for_model(model_name)
-        except Exception:
-            enc = tiktoken.get_encoding("cl100k_base")
-        prompt_tokens = len(enc.encode(prompt_text))
-        completion_tokens = len(enc.encode(content))
-    else:
-        prompt_tokens = len(prompt_text.split())
-        completion_tokens = len(content.split())
-        logger.debug("tiktoken not available; using word counts as approximation")
-    total_tokens = prompt_tokens + completion_tokens
+        usage = data.get("usage") if isinstance(data, dict) else None
+        if usage:
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+        elif tiktoken is not None:
+            try:
+                enc = tiktoken.encoding_for_model(model_name)
+            except Exception:
+                enc = tiktoken.get_encoding("cl100k_base")
+            prompt_tokens = len(enc.encode(prompt_text))
+            completion_tokens = len(enc.encode(content))
+        else:
+            prompt_tokens = len(prompt_text.split())
+            completion_tokens = len(content.split())
+            logger.debug("tiktoken not available; using word counts as approximation")
+        total_tokens = prompt_tokens + completion_tokens
 
-    logger.debug(
-        f"{phase or 'query'} tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}"
-    )
-    TOKEN_TOTALS["prompt"] += prompt_tokens
-    TOKEN_TOTALS["completion"] += completion_tokens
-    TOKEN_TOTALS["total"] += total_tokens
-    logger.debug(
-        f"Cumulative tokens - prompt: {TOKEN_TOTALS['prompt']}, "
-        f"completion: {TOKEN_TOTALS['completion']}, total: {TOKEN_TOTALS['total']}"
-    )
+        logger.debug(
+            f"{phase or 'query'} tokens - prompt: {prompt_tokens}, completion: {completion_tokens}, total: {total_tokens}"
+        )
+        TOKEN_TOTALS["prompt"] += prompt_tokens
+        TOKEN_TOTALS["completion"] += completion_tokens
+        TOKEN_TOTALS["total"] += total_tokens
+        logger.debug(
+            f"Cumulative tokens - prompt: {TOKEN_TOTALS['prompt']}, "
+            f"completion: {TOKEN_TOTALS['completion']}, total: {TOKEN_TOTALS['total']}"
+        )
 
-    return content, {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-    }
+        return content, {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        }
+    except Exception as e:
+        logger.error(f"Failed to query LLM: {e}")
+        raise
+
 
 
 __all__ = [

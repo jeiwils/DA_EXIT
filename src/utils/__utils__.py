@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -13,6 +14,7 @@ from typing import Any, Callable, Dict, Hashable, Iterable, Iterator, List, Opti
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 ### SERVER CONFIGURATION
@@ -513,35 +515,16 @@ def model_shard_paths(model: str, dataset: str, split: str, stem: str, size: str
     return [out_dir / f"{stem}_shard{i}_{size}.jsonl" for i in range(1, n_shards + 1)]
 
 
-
 def split_jsonl_for_models(path: str, model: str, *, resume: bool = False) -> List[str]:
-    """Split ``path`` into shards appropriate for ``model``.
-
-    Supported model sizes and shard counts:
-      ``1.5b`` -> 4 shards, ``7b``/``8b`` -> 2 shards, ``14b`` -> 1 shard.
-
-    Models with ``"moe"`` (case-insensitive) in their name are treated as
-    ``14b`` models and are kept as a single shard regardless of any size token.
-
-    Parameters
-    ----------
-    path:
-        Input JSONL file to shard.
-    model:
-        Model name whose size determines the number of shards.
-    resume:
-        When ``True``, existing shard files are reused and splitting is skipped
-        if all expected shards are already present.
-
-    Returns
-    -------
-    List[str]
-        Paths to the shard files produced (or reused).
-    """
+    """Split ``path`` into shards appropriate for ``model``."""
+    if not Path(path).exists():
+        logger.error(f"Input path does not exist: {path}")
+        raise FileNotFoundError(f"Input path does not exist: {path}")
 
     size = model_size(model)
     if "moe" in model.lower():
         size = "14b"
+        logger.info(f"Model {model} is MOE; treating as 14b")
 
     p = Path(path)
     dataset = p.parent.parent.name
@@ -550,17 +533,22 @@ def split_jsonl_for_models(path: str, model: str, *, resume: bool = False) -> Li
     out_paths = model_shard_paths(model, dataset, split, stem, size)
 
     if resume and all(op.exists() for op in out_paths):
+        logger.info(f"All shards exist for {model}; skipping split")
         return [str(op) for op in out_paths]
 
-    if size == "1.5b":
-        split_jsonl_into_four(path, *(str(op) for op in out_paths))
-    elif size in {"7b", "8b"}:
-        split_jsonl(path, str(out_paths[0]), str(out_paths[1]))
-    elif size == "14b":
-        data = list(load_jsonl(path))
-        save_jsonl(str(out_paths[0]), data)
-    else:
-        raise ValueError(f"Unsupported model size: {size}")
+    try:
+        if size == "1.5b":
+            split_jsonl_into_four(path, *(str(op) for op in out_paths))
+        elif size in {"7b", "8b"}:
+            split_jsonl(path, str(out_paths[0]), str(out_paths[1]))
+        elif size == "14b":
+            data = list(load_jsonl(path))
+            save_jsonl(str(out_paths[0]), data)
+        else:
+            raise ValueError(f"Unsupported model size: {size}")
+    except Exception as e:
+        logger.error(f"Failed to split JSONL for model {model}: {e}")
+        raise
 
     return [str(op) for op in out_paths]
 

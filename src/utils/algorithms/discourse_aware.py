@@ -1,14 +1,20 @@
-"""Regex-only discourse marker detection for anaphora, cataphora, and parentheticals.
+"""Discourse marker detection for anaphora, cataphora, and parentheticals.
 
+Uses pysbd for robust sentence boundary detection (matching chunking.py).
 Lists and patterns follow the Category A-G markers supplied in the prompt.
-Heuristics are intentionally lightweight and rely only on regular expressions.
+Heuristics are intentionally lightweight and rely only on regular expressions for marker detection.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Iterable, Pattern, Sequence, Tuple
+
+import pysbd
+
+logger = logging.getLogger(__name__)
 
 ###########################################################################
 # Marker categories (from the prompt)
@@ -194,6 +200,12 @@ PARENTHESIS_RE = re.compile(r"\([^)]*\)")
 FORWARD_FOLLOW_RE = re.compile(r"^\s*[:;]")
 
 ###########################################################################
+# Sentence boundary detection (pysbd)
+###########################################################################
+
+_SBD_SEGMENTER = pysbd.Segmenter(language="en", clean=False)
+
+###########################################################################
 # Data model
 ###########################################################################
 
@@ -215,13 +227,23 @@ class MarkerHit:
 
 
 def iter_sentence_spans(text: str) -> Iterable[Tuple[int, int, str]]:
-    """Yield (start, end, sentence_text) spans using a lightweight regex splitter."""
-    masked = _mask_sentence_dots(text)
-    for match in SENTENCE_RE.finditer(masked):
-        sentence = text[match.start() : match.end()]
-        if not sentence.strip():
-            continue
-        yield match.start(), match.end(), sentence
+    """Yield (start, end, sentence_text) spans using pysbd sentence boundary detection.
+    
+    This is compatible with the pysbd-based sentence splitting in chunking.py,
+    ensuring discourse-aware expansion works on chunks produced by the chunker.
+    """
+    start = 0
+    for sentence in _SBD_SEGMENTER.segment(text):
+        try:
+            # Find sentence position in original text
+            idx = text.index(sentence, start)
+        except ValueError:
+            # Fallback if sentence cannot be found
+            idx = start
+        end = idx + len(sentence)
+        if idx < end and sentence.strip():
+            yield idx, end, sentence
+        start = end
 
 
 def _dedupe_by_span(hits: list[MarkerHit]) -> list[MarkerHit]:
@@ -384,7 +406,6 @@ def find_parentheses(text: str) -> list[Tuple[int, int, str]]:
 # Public detection API
 ###########################################################################
 
-
 def find_anaphora_markers(
     text: str,
     *,
@@ -392,6 +413,10 @@ def find_anaphora_markers(
     include_parenthetical: bool = True,
 ) -> list[MarkerHit]:
     """Find backward-dependent linking markers."""
+    if not text:
+        logger.warning("Empty input text; returning empty list")
+        return []
+
     hits: list[MarkerHit] = []
     hits.extend(
         find_sentence_initial_markers(

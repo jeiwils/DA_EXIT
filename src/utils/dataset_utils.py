@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import random
+from tqdm import tqdm
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple, TypeVar
@@ -241,14 +242,49 @@ def sample_sentences_unrelated_docs(
     rng: random.Random,
     exclude: set[str] | None = None,
 ) -> List[Dict[str, str]]:
-    """Sample negative passages from other records (different questions)."""
+    """
+    Sample negative passages from other records efficiently using 
+    rejection sampling instead of full-list filtering.
+    """
+    if n <= 0 or not global_pool:
+        return []
+        
     exclude = exclude or set()
-    candidates = [
-        passage
-        for rid, passage in global_pool
-        if rid != record_id and passage["passage_id"] not in exclude
-    ]
-    return sample_without_replacement(candidates, n, rng)
+    results: List[Dict[str, str]] = []
+    seen_pids: set[str] = set()
+    
+    max_attempts = n * 100  
+    attempts = 0
+    
+    while len(results) < n and attempts < max_attempts:
+        attempts += 1
+        # Pick a random item from the pool
+        rid, passage = rng.choice(global_pool)
+        pid = passage["passage_id"]
+        
+        # Check if it's valid (different question and not in exclusions)
+        if rid != record_id and pid not in exclude and pid not in seen_pids:
+            results.append(passage)
+            seen_pids.add(pid)
+            
+    return results
+
+# def sample_sentences_unrelated_docs(
+#     record_id: str,
+#     global_pool: Sequence[Tuple[str, Dict[str, str]]],
+#     *,
+#     n: int,
+#     rng: random.Random,
+#     exclude: set[str] | None = None,
+# ) -> List[Dict[str, str]]:
+#     """Sample negative passages from other records (different questions)."""
+#     exclude = exclude or set()
+#     candidates = [
+#         passage
+#         for rid, passage in global_pool
+#         if rid != record_id and passage["passage_id"] not in exclude
+#     ]
+#     return sample_without_replacement(candidates, n, rng)
 
 
 def build_training_examples(
@@ -293,7 +329,7 @@ def build_training_examples(
     ]
 
     examples: List[Dict[str, Any]] = []
-    for record, record_id in zip(hotpot_records, record_ids):
+    for record, record_id in tqdm(zip(hotpot_records, record_ids), total=len(hotpot_records)):
         question = clean_text(str(record.get("question", "")))
         if not question:
             continue
@@ -360,7 +396,6 @@ def build_training_examples(
     rng.shuffle(examples)
     return examples
 
-
 @lru_cache(maxsize=8)
 def _build_sentence_context_lookup(
     *,
@@ -381,17 +416,51 @@ def _build_sentence_context_lookup(
         chunks_by_source.setdefault(source_id, []).append(row)
 
     lookup: Dict[str, str] = {}
+    
+    # --- 1. Gather all chunks into a flat list for batching ---
+    flat_chunks = []
     for source_id, chunks in chunks_by_source.items():
         chunks.sort(key=lambda x: int(x.get("chunk_index", 0)))
-        sent_idx = 0
         for chunk in chunks:
             chunk_text = clean_text(str(chunk.get("text", "")))
-            if not chunk_text:
+            if chunk_text:
+                flat_chunks.append((source_id, chunk_text))
+
+    if not flat_chunks:
+        return lookup
+
+    # --- 2. Setup for spaCy Batch Processing ---
+    # Import the spaCy model directly from your indexing file
+    from src.a2_indexing.chunking import _SPACY_NLP 
+    
+    # Extract just the texts for the spaCy pipe
+    texts = [item[1] for item in flat_chunks]
+    
+    # Dictionary to keep track of the sentence index for each source_id
+    sent_idx_tracker = {source_id: 0 for source_id in chunks_by_source.keys()}
+
+    # --- 3. Process all texts efficiently in C-level batches ---
+    # batch_size=256 is usually the sweet spot for memory vs. speed
+    docs = _SPACY_NLP.pipe(texts, batch_size=256)
+    
+    # --- 4. Zip metadata with the processed docs and build the lookup ---
+    for (source_id, chunk_text), doc in tqdm(
+        zip(flat_chunks, docs), 
+        total=len(flat_chunks), 
+        desc="Building sentence context lookup"
+    ):
+        # doc.sents handles the sentence splitting natively
+        for sent in doc.sents:
+            sentence_str = sent.text.strip()
+            if not sentence_str:
                 continue
-            for sentence in split_text_into_sentences(chunk_text):
-                sentence_id = f"{source_id}__sent{sent_idx}"
-                if sentence_id not in lookup:
-                    lookup[sentence_id] = chunk_text
-                sent_idx += 1
+            
+            sentence_id = f"{source_id}__sent{sent_idx_tracker[source_id]}"
+            if sentence_id not in lookup:
+                lookup[sentence_id] = chunk_text
+            sent_idx_tracker[source_id] += 1
 
     return lookup
+
+
+

@@ -1,67 +1,16 @@
-"""
-
-A lightweight, rule-based discourse-aware extension to extractive evidence selection, designed to preserve cohesion and entailment across sentence boundaries.
-
-
-Benchmarking
-- Baselines = EXIT, dense rag, sparse rag, hybrid rag 
-- 1 = EXIT + discourse aware sentence expansion 
-- 2 = EXIT + discourse aware chunking
-- 2 = EXIT + discourse aware sentence expansion and chunking 
-
-
-
-
-1. Retrieve top-k chunks (fixed k, e.g. 20)
-2. Split chunks into sentences
-3. EXIT extractor scores sentences
-4. EXIT adaptively selects sentences
-   (ranked + halting / token budget)
-5. ↓ YOUR ADDITION ↓
-6. Discourse-aware span expansion
-   - pronoun dependency → include antecedent sentence
-   - sentence-initial connectives → include previous sentence
-   - colon / list introducer → include following sentence
-7. Repack expanded spans under the same token budget
-8. Reader generates answer
-
-
-
-
-
-
-
-Offline:
-Gold datasets
- → build sentence-level labels
- → LoRA fine-tuning (binary extractor)
-
-Inference:
-Query
- → retrieve chunks (passages)
- → split chunks into sentences
- → score sentences with trained LoRA extractor 
- → expand sentences with discourse-aware rules
- → select top relevant sentences with trained LoRa extractor under token budget
- → send extracted sentences to reader
- → reader generates answer
-
-
-
-
-"""
-
 from __future__ import annotations
 
+
+import numpy as np
 import json
 import logging
 import os
 import random
+
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +63,7 @@ __all__ = ["run_da_exit", "main"]
 
 ### DATA & SPLITS
 DATASETS = ["musique"] #["musique", "hotpotqa", "2wikimultihopqa", "natural_questions"]
-# Use val for tuning, dev for final metrics.
-SPLITS = ["val"] # ["val", "dev"]
+SPLITS = ["val", "dev"]
 
 ### RETRIEVAL & PASSAGE
 RETRIEVER_CONFIG = {
@@ -124,7 +72,7 @@ RETRIEVER_CONFIG = {
     "sparse": False,
 }
 TOP_K_CHUNK_SWEEP = [10, 5, 20, 1]
-HYBRID_ALPHA = DEFAULT_HYBRID_ALPHA ## ????
+HYBRID_ALPHA = DEFAULT_HYBRID_ALPHA 
 # Passage source (fixed chunk type).
 PASSAGE_SOURCE = "full_passages_chunks"
 # Sentence mode controls post-ranking expansion for the reader context.
@@ -138,7 +86,7 @@ TAU_LOW_SWEEP = [0.1, 0.15, 0.2, 0.25, 0.35]
 READER_CONTEXT_BUDGET_TOKENS = 800
 
 ### READER
-READER_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+READER_MODEL = "Mistral/Mistral-7B-Instruct-v0.1.Q4_0.gguf" 
 SERVER_URL = "http://localhost:8005"
 USE_IN_PROCESS_READER = False
 IN_PROCESS_READER_LOCAL_FILES_ONLY = True
@@ -178,7 +126,6 @@ def run_da_exit(
     resume: bool,
     tau_low: float,
 ) -> Dict[str, Any]:
-    """Run DA_EXIT for a dataset/split/retriever and return summary metrics."""
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
@@ -790,11 +737,6 @@ def run_da_exit(
 
 
 def main() -> None:
-    """Entry point for the DA_EXIT orchestrator.
-
-    Expects processed datasets under data/processed_datasets and precomputed
-    chunk representations under data/representations/datasets.
-    """
     import logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)

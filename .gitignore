@@ -1,3 +1,9 @@
 data/**
 sentence_extraction_reranking/**
 .venv/**
+
+# Keep all data ignored by default, but include generated visualisation graphs.
+!data/results/
+!data/results/visualisations/
+!data/results/visualisations/**/*.png
+!data/results/visualisations/**/*.pdf

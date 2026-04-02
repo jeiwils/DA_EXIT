@@ -4,6 +4,8 @@ scipy
 spacy
 torch
 matplotlib
+pandas
+seaborn
 sentence-transformers
 tqdm
 transformers

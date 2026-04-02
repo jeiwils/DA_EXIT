@@ -40,7 +40,7 @@ DEFAULT_DEV_SPLIT = "val"
 USE_DISCOURSE_AWARE_PASSAGES = False
 
 # Single switch for quick local smoke tests versus full training runs.
-TEST_MODE = True
+TEST_MODE = False
 
 # Overrides applied only when TEST_MODE=True.
 TEST_MODE_KWARGS = {
@@ -324,27 +324,57 @@ def train(
         pos_weight = 1.0
 
     # Fast tokenizers trigger a hub lookup in some versions when offline.
-    tokenizer = AutoTokenizer.from_pretrained(
-        base_model_name,
-        local_files_only=local_files_only,
-        use_fast=not local_files_only,
-    )
+    effective_local_files_only = local_files_only
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_name,
+            local_files_only=effective_local_files_only,
+            use_fast=not effective_local_files_only,
+        )
+
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(device)
+        model_dtype, amp_dtype = _get_precision_config(device)
+
+        model = init_model_with_lora(
+            base_model_name,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            local_files_only=effective_local_files_only,
+            torch_dtype=model_dtype,
+        )
+    except OSError as exc:
+        if not local_files_only:
+            raise
+        print(
+            "[warn] local_files_only=True but model/tokenizer files were not found in "
+            "cache; retrying with online Hugging Face download enabled"
+        )
+        effective_local_files_only = False
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_name,
+            local_files_only=effective_local_files_only,
+            use_fast=not effective_local_files_only,
+        )
+
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = torch.device(device)
+        model_dtype, amp_dtype = _get_precision_config(device)
+
+        model = init_model_with_lora(
+            base_model_name,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            local_files_only=effective_local_files_only,
+            torch_dtype=model_dtype,
+        )
+
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
-
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(device)
-    model_dtype, amp_dtype = _get_precision_config(device)
-
-    model = init_model_with_lora(
-        base_model_name,
-        lora_r=lora_r,
-        lora_alpha=lora_alpha,
-        lora_dropout=lora_dropout,
-        local_files_only=local_files_only,
-        torch_dtype=model_dtype,
-    )
 
     if getattr(model.config, "pad_token_id", None) is None:
         model.config.pad_token_id = tokenizer.pad_token_id

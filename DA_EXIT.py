@@ -73,7 +73,7 @@ RETRIEVER_CONFIG = {
     "dense": False,
     "sparse": False,
 }
-TOP_K_CHUNK_SWEEP = [5, 10]
+TOP_K_CHUNK_SWEEP = [1, 5, 10, 20]
 HYBRID_ALPHA = DEFAULT_HYBRID_ALPHA 
 
 PASSAGE_SOURCE = "full_passages_chunks"
@@ -84,11 +84,11 @@ SENTENCE_MODES = ["standard_sentences", "discourse_aware_sentences"]
 
 ### SELECTION & BUDGETS
 # Sentence usefulness cutoff sweep (set from best_metrics.json of chosen LoRA model)
-TAU_LOW_SWEEP = [0.35, 0.465, 0.58] # higher recall;  teacher chosen; higher precision
+TAU_LOW_SWEEP = [0.20, 0.30, 0.40] # higher recall;  teacher chosen; higher precision
 # Total token budget for reader context (selected sentences).
 
 # Sweep different reader context budgets to evaluate discourse-aware efficiency
-READER_CONTEXT_BUDGET_TOKENS_SWEEP = [256, 384, 512]
+READER_CONTEXT_BUDGET_TOKENS_SWEEP = [128, 192, 288, 432]
 ### READER
 READER_MODEL = "Mistral/Mistral-7B-Instruct-v0.1.Q4_0.gguf" 
 SERVER_URL = "http://localhost:8005"

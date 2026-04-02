@@ -352,16 +352,13 @@ def _build_sentence_candidates(
     for sent_idx, sent in enumerate(sentences):
         if not sent.strip():
             continue
+        # In discourse_aware mode, check sentence for discourse markers
         has_anaphora = _has_anaphora_marker(
             sent,
             include_reformulation=include_reformulation,
             include_parenthetical=include_parenthetical,
         )
-        has_cataphora = _has_cataphora_marker(
-            sent,
-            include_reformulation=include_reformulation,
-            require_forward_punct=require_forward_punct,
-        )
+        has_cataphora = False  # Cataphora detection not implemented
         expanded_text, span_start, span_end = _expand_sentence_text(
             sentences,
             sent_idx,

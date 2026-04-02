@@ -77,6 +77,10 @@ def main() -> None:
                 if os.path.exists(passages_npy) and not RESUME:
                     passages_emb = np.load(passages_npy).astype("float32")
                     print(f"[skip] {passages_npy} exists; loaded.")
+                    add_keywords_to_passages_jsonl(
+                        str(passages_jsonl),
+                        only_ids=None,  
+                    )
                     if not os.path.exists(pass_paths["passages_index"]):
                         build_and_save_faiss_index(
                             embeddings=passages_emb,
@@ -104,11 +108,12 @@ def main() -> None:
                         id_field="passage_id",
                         done_ids=done_ids,
                     )
+                    # Always ensure keywords are extracted for all passage sources
+                    add_keywords_to_passages_jsonl(
+                        str(passages_jsonl),
+                        only_ids=new_ids if new_ids else None,
+                    )
                     if new_pass_embs.size > 0:
-                        add_keywords_to_passages_jsonl(
-                            str(passages_jsonl),
-                            only_ids=new_ids,
-                        )
                         build_and_save_faiss_index(
                             embeddings=passages_emb,
                             dataset_name=dataset,

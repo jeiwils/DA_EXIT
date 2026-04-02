@@ -1,0 +1,10 @@
+a1_ingestion
+a2_indexing
+a3_representations
+b1_retrieval
+b2_reranking
+c1_reasoning
+c2_generation
+d1_evaluation
+tests
+utils

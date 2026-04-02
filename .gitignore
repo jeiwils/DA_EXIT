@@ -2,8 +2,20 @@ data/**
 sentence_extraction_reranking/**
 .venv/**
 
-# Keep all data ignored by default, but include generated visualisation graphs.
 !data/results/
 !data/results/visualisations/
-!data/results/visualisations/**/*.png
-!data/results/visualisations/**/*.pdf
+
+# Keep visualisations ignored by default, then allow only selected plot folders.
+data/results/visualisations/**
+
+!data/results/visualisations/frontiers/
+!data/results/visualisations/frontiers/**/*.png
+!data/results/visualisations/frontiers/**/*.pdf
+
+!data/results/visualisations/tau/
+!data/results/visualisations/tau/**/*.png
+!data/results/visualisations/tau/**/*.pdf
+
+!data/results/visualisations/tokens/
+!data/results/visualisations/tokens/**/*.png
+!data/results/visualisations/tokens/**/*.pdf
